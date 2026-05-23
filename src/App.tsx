@@ -21,9 +21,9 @@ import {
 } from "lucide-react";
 import { templates } from "./data/templates";
 import { downloadBlob, nodeToPngBlob, nodeToPngFile, openBlobFallback } from "./lib/export";
-import { createPabloEffect, createPabloEffectFromSeed } from "./lib/pablo";
+import { createPabloEffect, createPabloEffectFromSeed, nextPabloStyle, pabloStyleLabels } from "./lib/pablo";
 import { clamp, cn } from "./lib/utils";
-import type { ProjectState, Slot, Surface, TemplateDefinition, TemplatePage, UploadedMedia } from "./types";
+import type { PabloMotif, ProjectState, Slot, Surface, TemplateDefinition, TemplatePage, UploadedMedia } from "./types";
 
 const filters: Array<Surface | "all"> = ["all", "portrait", "carousel", "story", "square", "reel"];
 const placeholderGradients = [
@@ -101,25 +101,25 @@ export function App() {
     }
   }
 
-  async function sharePng() {
+  async function sharePng(target: "instagram" | "tiktok") {
     if (!previewRef.current) return;
     try {
       const file = await nodeToPngFile(previewRef.current, currentFileName());
       const shareData = {
         title: "Life of Pablo edit",
-        text: "Made in Life of Pablo.",
+        text: target === "instagram" ? "Choose Instagram from the share sheet." : "Choose TikTok from the share sheet.",
         files: [file],
       };
 
       if (navigator.share && (!navigator.canShare || navigator.canShare({ files: [file] }))) {
         await navigator.share(shareData);
-        setStatus("Share sheet opened.");
+        setStatus(target === "instagram" ? "Choose Instagram from the share sheet." : "Choose TikTok from the share sheet.");
         setShareOpen(false);
         return;
       }
 
       downloadBlob(file, currentFileName());
-      setStatus("Sharing is not available here, so the PNG downloaded instead.");
+      setStatus(target === "instagram" ? "Sharing is not available here. Save the PNG, then upload in Instagram." : "Sharing is not available here. Save the PNG, then upload in TikTok.");
     } catch {
       setStatus("Share was canceled or blocked.");
     }
@@ -172,8 +172,22 @@ export function App() {
   function applyPablo() {
     setProject((current) => ({
       ...current,
-      pabloEffects: { ...current.pabloEffects, [page.id]: createPabloEffect(current.pabloEffects[page.id]?.intensity ?? 0.55) },
+      pabloEffects: { ...current.pabloEffects, [page.id]: createPabloEffect(current.pabloEffects[page.id]?.intensity ?? 0.55, current.pabloEffects[page.id]?.style ?? "prism-portrait") },
     }));
+  }
+
+  function rerollPablo() {
+    setProject((current) => {
+      const currentEffect = current.pabloEffects[page.id];
+      const nextStyle = nextPabloStyle(currentEffect?.style);
+      return {
+        ...current,
+        pabloEffects: {
+          ...current.pabloEffects,
+          [page.id]: createPabloEffect(currentEffect?.intensity ?? 0.55, nextStyle),
+        },
+      };
+    });
   }
 
   function updatePabloIntensity(value: number) {
@@ -183,7 +197,7 @@ export function App() {
         ...current,
         pabloEffects: {
           ...current.pabloEffects,
-          [page.id]: createPabloEffectFromSeed(currentEffect.seed, value),
+          [page.id]: createPabloEffectFromSeed(currentEffect.seed, value, currentEffect.style ?? "prism-portrait"),
         },
       };
     });
@@ -219,6 +233,7 @@ export function App() {
             onMedia={updateMedia}
             onText={updateText}
             onApplyPablo={applyPablo}
+            onRerollPablo={rerollPablo}
             onIntensity={updatePabloIntensity}
             onClearPablo={clearPablo}
             onExport={exportPng}
@@ -306,7 +321,8 @@ export function App() {
             <div className="sheet-panel">
               <div className="sheet-handle" />
               <h2>Send your edit</h2>
-              <button onClick={sharePng}><Share2 size={18} /> Share to Instagram/TikTok</button>
+              <button onClick={() => sharePng("instagram")}><Share2 size={18} /> Share to Instagram</button>
+              <button onClick={() => sharePng("tiktok")}><Share2 size={18} /> Share to TikTok</button>
               <button onClick={exportPng}><Download size={18} /> Download PNG</button>
               <button onClick={copyProjectLink}><Link size={18} /> Copy project link</button>
             </div>
@@ -326,6 +342,7 @@ type EditorProps = {
   onMedia: (slotId: string, file: File) => void;
   onText: (layerId: string, value: string) => void;
   onApplyPablo: () => void;
+  onRerollPablo: () => void;
   onIntensity: (value: number) => void;
   onClearPablo: () => void;
   onExport: () => void;
@@ -335,7 +352,7 @@ type EditorProps = {
   onProject: (patch: Partial<ProjectState>) => void;
 };
 
-function Editor({ template, page, project, previewRef, onPage, onMedia, onText, onApplyPablo, onIntensity, onClearPablo, onExport, onShare, onCamera, status, onProject }: EditorProps) {
+function Editor({ template, page, project, previewRef, onPage, onMedia, onText, onApplyPablo, onRerollPablo, onIntensity, onClearPablo, onExport, onShare, onCamera, status, onProject }: EditorProps) {
   const pabloEffect = project.pabloEffects[page.id];
   const allSlots = useMemo(() => template.pages.flatMap((entry) => entry.slots), [template]);
 
@@ -411,9 +428,10 @@ function Editor({ template, page, project, previewRef, onPage, onMedia, onText, 
         <button className="pablo-button" onClick={onApplyPablo}>
           <Wand2 size={20} />
           Life of Pablo
+          <span>{pabloStyleLabels[pabloEffect?.style ?? "prism-portrait"]}</span>
         </button>
         <div className="pablo-controls">
-          <button onClick={onApplyPablo}><RefreshCw size={16} /> Reroll</button>
+          <button onClick={onRerollPablo}><RefreshCw size={16} /> Reroll</button>
           <label>
             <Sparkles size={16} />
             <input type="range" min="0.25" max="0.9" step="0.05" value={pabloEffect?.intensity ?? 0.55} onChange={(event) => onIntensity(Number(event.target.value))} />
@@ -505,7 +523,61 @@ function PabloOverlay({ effect }: { effect: NonNullable<ProjectState["pabloEffec
           />
         </g>
       ))}
+      {(effect.linework ?? []).map((line) => (
+        <path
+          key={line.id}
+          d={line.d}
+          fill={line.fill ?? "none"}
+          stroke={line.color}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth={line.width}
+          opacity={line.opacity}
+        />
+      ))}
+      {(effect.motifs ?? []).map((motif) => (
+        <PabloMotifShape key={motif.id} motif={motif} />
+      ))}
     </svg>
+  );
+}
+
+function PabloMotifShape({ motif }: { motif: PabloMotif }) {
+  const transform = `translate(${motif.x} ${motif.y}) rotate(${motif.rotate} ${motif.w / 2} ${motif.h / 2})`;
+
+  if (motif.kind === "eye") {
+    return (
+      <g transform={transform} opacity={motif.opacity}>
+        <path d={`M 0 ${motif.h / 2} Q ${motif.w / 2} -${motif.h * 0.25} ${motif.w} ${motif.h / 2} Q ${motif.w / 2} ${motif.h * 1.25} 0 ${motif.h / 2}`} fill="#f7f2dd" stroke="#050505" strokeWidth="1.1" />
+        <ellipse cx={motif.w / 2} cy={motif.h / 2} rx={motif.w * 0.18} ry={motif.h * 0.34} fill={motif.color} stroke="#050505" strokeWidth="0.8" />
+        <circle cx={motif.w / 2} cy={motif.h / 2} r={Math.min(motif.w, motif.h) * 0.12} fill="#050505" />
+      </g>
+    );
+  }
+
+  if (motif.kind === "lip") {
+    return (
+      <g transform={transform} opacity={motif.opacity}>
+        <path d={`M 0 ${motif.h * 0.48} C ${motif.w * 0.22} 0 ${motif.w * 0.36} ${motif.h * 0.32} ${motif.w * 0.5} ${motif.h * 0.34} C ${motif.w * 0.65} ${motif.h * 0.32} ${motif.w * 0.78} 0 ${motif.w} ${motif.h * 0.48} C ${motif.w * 0.68} ${motif.h * 1.04} ${motif.w * 0.32} ${motif.h * 1.04} 0 ${motif.h * 0.48}`} fill={motif.color} stroke="#050505" strokeWidth="1" />
+        <path d={`M ${motif.w * 0.08} ${motif.h * 0.53} C ${motif.w * 0.35} ${motif.h * 0.7} ${motif.w * 0.65} ${motif.h * 0.7} ${motif.w * 0.92} ${motif.h * 0.53}`} fill="none" stroke="#050505" strokeWidth="0.65" />
+      </g>
+    );
+  }
+
+  if (motif.kind === "profile") {
+    return (
+      <g transform={transform} opacity={motif.opacity}>
+        <path d={`M ${motif.w * 0.1} ${motif.h * 0.08} C ${motif.w * 0.8} ${motif.h * 0.02} ${motif.w} ${motif.h * 0.36} ${motif.w * 0.74} ${motif.h * 0.54} L ${motif.w * 0.94} ${motif.h * 0.68} L ${motif.w * 0.64} ${motif.h * 0.72} C ${motif.w * 0.56} ${motif.h} ${motif.w * 0.2} ${motif.h} ${motif.w * 0.08} ${motif.h * 0.78} Z`} fill={motif.color} stroke="#050505" strokeWidth="1" />
+        <path d={`M ${motif.w * 0.36} ${motif.h * 0.34} Q ${motif.w * 0.52} ${motif.h * 0.22} ${motif.w * 0.66} ${motif.h * 0.34}`} fill="none" stroke={motif.accent} strokeWidth="1" />
+      </g>
+    );
+  }
+
+  return (
+    <g transform={transform} opacity={motif.opacity}>
+      <circle cx={motif.w / 2} cy={motif.h / 2} r={Math.min(motif.w, motif.h) * 0.48} fill={motif.color} stroke="#050505" strokeWidth="1" />
+      <path d={`M ${motif.w * 0.28} ${motif.h * 0.2} L ${motif.w * 0.76} ${motif.h * 0.5} L ${motif.w * 0.28} ${motif.h * 0.8} Z`} fill={motif.accent} stroke="#050505" strokeWidth="0.65" />
+    </g>
   );
 }
 

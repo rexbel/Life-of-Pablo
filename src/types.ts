@@ -69,10 +69,37 @@ export type PabloFacet = {
   blend: "multiply" | "screen" | "overlay";
 };
 
+export type PabloStyle = "prism-portrait" | "playful-mask" | "bauhaus-profile";
+
+export type PabloLinework = {
+  id: string;
+  d: string;
+  color: string;
+  width: number;
+  opacity: number;
+  fill?: string;
+};
+
+export type PabloMotif = {
+  id: string;
+  kind: "eye" | "lip" | "circle" | "profile";
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  color: string;
+  accent: string;
+  rotate: number;
+  opacity: number;
+};
+
 export type PabloEffect = {
   seed: number;
+  style: PabloStyle;
   intensity: number;
   facets: PabloFacet[];
+  linework: PabloLinework[];
+  motifs?: PabloMotif[];
 };
 
 export type ProjectState = {
