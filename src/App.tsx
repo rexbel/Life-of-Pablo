@@ -8,8 +8,8 @@ import {
   Home,
   ImagePlus,
   Layers,
+  Link,
   Palette,
-  Plus,
   RefreshCw,
   Settings,
   Share2,
@@ -20,10 +20,10 @@ import {
   Wand2,
 } from "lucide-react";
 import { templates } from "./data/templates";
-import { exportNodeAsPng } from "./lib/export";
+import { downloadBlob, nodeToPngBlob, nodeToPngFile, openBlobFallback } from "./lib/export";
 import { createPabloEffect, createPabloEffectFromSeed } from "./lib/pablo";
 import { clamp, cn } from "./lib/utils";
-import type { MediaKind, ProjectState, Slot, Surface, TemplateDefinition, TemplatePage, UploadedMedia } from "./types";
+import type { ProjectState, Slot, Surface, TemplateDefinition, TemplatePage, UploadedMedia } from "./types";
 
 const filters: Array<Surface | "all"> = ["all", "portrait", "carousel", "story", "square", "reel"];
 const placeholderGradients = [
@@ -51,6 +51,8 @@ function initialProject(template: TemplateDefinition): ProjectState {
 export function App() {
   const [tab, setTab] = useState<"home" | "templates" | "projects" | "more">("home");
   const [filter, setFilter] = useState<Surface | "all">("all");
+  const [shareOpen, setShareOpen] = useState(false);
+  const [status, setStatus] = useState("");
   const [selectedId, setSelectedId] = useState(templates[0].id);
   const selectedTemplate = templates.find((template) => template.id === selectedId) ?? templates[0];
   const [project, setProject] = useState<ProjectState>(() => initialProject(selectedTemplate));
@@ -59,6 +61,7 @@ export function App() {
     return saved ? (JSON.parse(saved) as ProjectState[]) : [];
   });
   const previewRef = useRef<HTMLDivElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
 
   const activeTemplate = templates.find((template) => template.id === project.templateId) ?? templates[0];
   const page = activeTemplate.pages[project.activePage] ?? activeTemplate.pages[0];
@@ -74,11 +77,64 @@ export function App() {
     const next = [project, ...savedProjects.filter((item) => item.templateId !== project.templateId)].slice(0, 8);
     setSavedProjects(next);
     window.localStorage.setItem("pablo-projects", JSON.stringify(next));
+    setStatus("Draft saved.");
+  }
+
+  function currentFileName() {
+    return `${activeTemplate.name.toLowerCase().replaceAll(" ", "-")}.png`;
   }
 
   async function exportPng() {
     if (!previewRef.current) return;
-    await exportNodeAsPng(previewRef.current, `${activeTemplate.name.toLowerCase().replaceAll(" ", "-")}.png`);
+    try {
+      const blob = await nodeToPngBlob(previewRef.current);
+      downloadBlob(blob, currentFileName());
+      setStatus("PNG download started.");
+    } catch {
+      try {
+        setStatus("Download was blocked. Opening the PNG instead.");
+        const blob = await nodeToPngBlob(previewRef.current);
+        openBlobFallback(blob);
+      } catch {
+        setStatus("PNG export failed. Try again after the preview finishes rendering.");
+      }
+    }
+  }
+
+  async function sharePng() {
+    if (!previewRef.current) return;
+    try {
+      const file = await nodeToPngFile(previewRef.current, currentFileName());
+      const shareData = {
+        title: "Life of Pablo edit",
+        text: "Made in Life of Pablo.",
+        files: [file],
+      };
+
+      if (navigator.share && (!navigator.canShare || navigator.canShare({ files: [file] }))) {
+        await navigator.share(shareData);
+        setStatus("Share sheet opened.");
+        setShareOpen(false);
+        return;
+      }
+
+      downloadBlob(file, currentFileName());
+      setStatus("Sharing is not available here, so the PNG downloaded instead.");
+    } catch {
+      setStatus("Share was canceled or blocked.");
+    }
+  }
+
+  async function copyProjectLink() {
+    const url = window.location.href;
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(url);
+      setStatus("Project link copied.");
+      setShareOpen(false);
+      return;
+    }
+
+    setStatus("Clipboard is not available in this browser.");
   }
 
   function updateText(layerId: string, value: string) {
@@ -93,6 +149,24 @@ export function App() {
       url: URL.createObjectURL(file),
     };
     setProject((current) => ({ ...current, media: { ...current.media, [slotId]: media } }));
+    setStatus(`${file.type.startsWith("video") ? "Video" : "Photo"} added to ${slotId}.`);
+  }
+
+  function firstEmptyActiveSlot() {
+    return page.slots.find((slot) => !project.media[slot.id])?.id ?? page.slots[0]?.id;
+  }
+
+  function captureMedia(file: File) {
+    const slotId = firstEmptyActiveSlot();
+    if (slotId) updateMedia(slotId, file);
+  }
+
+  function goPrimary() {
+    if (tab === "home") {
+      setTab("templates");
+      return;
+    }
+    setTab("home");
   }
 
   function applyPablo() {
@@ -123,7 +197,7 @@ export function App() {
     <main className="app-shell">
       <section className="phone-frame">
         <header className="topbar">
-          <button className="icon-button" aria-label="Back">
+          <button className="icon-button" onClick={goPrimary} aria-label={tab === "home" ? "Open templates" : "Back to editor"}>
             <Layers size={22} />
           </button>
           <div>
@@ -148,6 +222,9 @@ export function App() {
             onIntensity={updatePabloIntensity}
             onClearPablo={clearPablo}
             onExport={exportPng}
+            onShare={() => setShareOpen(true)}
+            onCamera={() => cameraInputRef.current?.click()}
+            status={status}
             onProject={(patch) => setProject((current) => ({ ...current, ...patch }))}
           />
         )}
@@ -215,9 +292,26 @@ export function App() {
           <NavButton icon={<Folder size={24} />} label="Projects" active={tab === "projects"} onClick={() => setTab("projects")} />
           <NavButton icon={<Settings size={24} />} label="More" active={tab === "more"} onClick={() => setTab("more")} />
         </nav>
-        <button className="floating-add" onClick={() => setTab("templates")} aria-label="Choose template">
-          <Plus size={34} />
-        </button>
+        <input
+          ref={cameraInputRef}
+          className="hidden-input"
+          type="file"
+          accept="image/*,video/*"
+          capture="environment"
+          onChange={(event) => handleCapturedFile(event, captureMedia)}
+        />
+        {shareOpen && (
+          <div className="share-sheet" role="dialog" aria-label="Share export">
+            <button className="sheet-scrim" aria-label="Close share menu" onClick={() => setShareOpen(false)} />
+            <div className="sheet-panel">
+              <div className="sheet-handle" />
+              <h2>Send your edit</h2>
+              <button onClick={sharePng}><Share2 size={18} /> Share to Instagram/TikTok</button>
+              <button onClick={exportPng}><Download size={18} /> Download PNG</button>
+              <button onClick={copyProjectLink}><Link size={18} /> Copy project link</button>
+            </div>
+          </div>
+        )}
       </section>
     </main>
   );
@@ -235,10 +329,13 @@ type EditorProps = {
   onIntensity: (value: number) => void;
   onClearPablo: () => void;
   onExport: () => void;
+  onShare: () => void;
+  onCamera: () => void;
+  status: string;
   onProject: (patch: Partial<ProjectState>) => void;
 };
 
-function Editor({ template, page, project, previewRef, onPage, onMedia, onText, onApplyPablo, onIntensity, onClearPablo, onExport, onProject }: EditorProps) {
+function Editor({ template, page, project, previewRef, onPage, onMedia, onText, onApplyPablo, onIntensity, onClearPablo, onExport, onShare, onCamera, status, onProject }: EditorProps) {
   const pabloEffect = project.pabloEffects[page.id];
   const allSlots = useMemo(() => template.pages.flatMap((entry) => entry.slots), [template]);
 
@@ -262,11 +359,12 @@ function Editor({ template, page, project, previewRef, onPage, onMedia, onText, 
           </div>
         </div>
         <div className="round-actions">
-          <button aria-label="Camera"><Camera size={22} /></button>
-          <button aria-label="Share"><Share2 size={22} /></button>
-          <button aria-label="Save"><Bookmark size={22} /></button>
+          <button onClick={onCamera} aria-label="Capture media"><Camera size={22} /></button>
+          <button onClick={onShare} aria-label="Share export"><Share2 size={22} /></button>
+          <button onClick={onExport} aria-label="Download PNG"><Download size={22} /></button>
         </div>
       </div>
+      {status && <p className="status-line" role="status">{status}</p>}
 
       <div className="tools-panel">
         <div className="panel-head">
@@ -297,7 +395,7 @@ function Editor({ template, page, project, previewRef, onPage, onMedia, onText, 
       <div className="tools-panel">
         <div className="panel-head">
           <h2><Palette size={18} /> Style</h2>
-          <button className="small-button" onClick={onExport}><Download size={15} /> PNG</button>
+          <span>export via toolbar</span>
         </div>
         <div className="style-grid">
           {["#050505", "#f1eee7", "#d9c59d", "#24352d", "#354c5c"].map((color) => (
@@ -448,4 +546,11 @@ function NavButton({ icon, label, active, onClick }: { icon: React.ReactNode; la
 function handleFile(event: ChangeEvent<HTMLInputElement>, slotId: string, onMedia: (slotId: string, file: File) => void) {
   const file = event.target.files?.[0];
   if (file) onMedia(slotId, file);
+  event.target.value = "";
+}
+
+function handleCapturedFile(event: ChangeEvent<HTMLInputElement>, onMedia: (file: File) => void) {
+  const file = event.target.files?.[0];
+  if (file) onMedia(file);
+  event.target.value = "";
 }
